@@ -168,30 +168,72 @@ class PmMetrics:
         if not active_jobs:
             return
 
-        metrics = _flatten_metrics(data)
-        if not metrics:
+        # Per-slice throughput, keyed by the UE S-NSSAI tagged by the RAN. Dynamic: any number
+        # of slices that appear in ue_list are aggregated independently.
+        slice_tput = self._slice_throughput(data)
+        if not slice_tput:
             return
 
         for job_id, job in active_jobs.items():
             allowed = set(job.get("performanceMetrics") or [])
-            job_metrics = [m for m in metrics if m.get("name") in allowed] if allowed else metrics
-            if not job_metrics:
-                continue
-            envelope = self._build_envelope(job_id, job, job_metrics)
-            self._state.pm_metrics_queue.put_nowait((job["streamTarget"], envelope))
+            for (sst, sd), agg in slice_tput.items():
+                slice_metrics = [
+                    {"name": "DlUeThroughput_Cell", "value": agg["dl_kbps"]},
+                    {"name": "UlUeThroughput_Cell", "value": agg["ul_kbps"]},
+                ]
+                job_metrics = (
+                    [m for m in slice_metrics if m["name"] in allowed] if allowed else slice_metrics
+                )
+                if not job_metrics:
+                    continue
+                envelope = self._build_envelope(job_id, job, job_metrics, sst=sst, sd=sd)
+                self._state.pm_metrics_queue.put_nowait((job["streamTarget"], envelope))
 
-    def _build_envelope(self, job_id: str, job: dict, metrics: list) -> dict:
-        """Construct a JSON envelope for the PM stream per the agreed schema."""
+    @staticmethod
+    def _slice_throughput(data: dict) -> dict:
+        """Aggregate per-UE throughput by slice S-NSSAI (sst, sd) from the gNB cell metrics.
+
+        Returns {(sst, sd): {"dl_kbps", "ul_kbps", "nof_ues"}}. sd is None when the UE's
+        S-NSSAI carries no SD. UEs without an sst tag (older RAN) are skipped.
+        """
+        slices: dict = {}
+        for cell in data.get("cells") or []:
+            if not isinstance(cell, dict):
+                continue
+            for ue in cell.get("ue_list") or []:
+                if not isinstance(ue, dict) or ue.get("sst") is None:
+                    continue
+                key = (ue.get("sst"), ue.get("sd"))
+                agg = slices.setdefault(key, {"dl_kbps": 0.0, "ul_kbps": 0.0, "nof_ues": 0})
+                dl, ul = ue.get("dl_brate"), ue.get("ul_brate")
+                if isinstance(dl, (int, float)) and not isinstance(dl, bool):
+                    agg["dl_kbps"] += dl / 1000.0
+                if isinstance(ul, (int, float)) and not isinstance(ul, bool):
+                    agg["ul_kbps"] += ul / 1000.0
+                agg["nof_ues"] += 1
+        return slices
+
+    def _build_envelope(self, job_id: str, job: dict, metrics: list, sst=None, sd=None) -> dict:
+        """Construct a JSON envelope for the PM stream per the agreed schema.
+
+        When sst/sd are provided, the envelope is slice-scoped (measuredObject carries the
+        S-NSSAI) so the SMO/rApp can do per-slice assurance.
+        """
+        measured = {
+            "objectType": job.get("nf_key", ""),
+            "objectId": job.get("nf_instance_id", "unknown"),
+            "plmnId": job.get("plmn_id", ""),
+        }
+        if sst is not None:
+            measured["sst"] = sst
+        if sd is not None:
+            measured["sd"] = sd
         return {
             "nfType": self._profile,
             "nfInstanceId": job.get("nf_instance_id", "unknown"),
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "granularityPeriod": job.get("granularityPeriod", 1),
-            "measuredObject": {
-                "objectType": job.get("nf_key", ""),
-                "objectId": job.get("nf_instance_id", "unknown"),
-                "plmnId": job.get("plmn_id", ""),
-            },
+            "measuredObject": measured,
             "metrics": metrics,
             "jobId": job_id,
         }
