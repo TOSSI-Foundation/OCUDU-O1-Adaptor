@@ -224,6 +224,13 @@ class PmMetrics:
             "objectId": job.get("nf_instance_id", "unknown"),
             "plmnId": job.get("plmn_id", ""),
         }
+        # 3GPP Distinguished Name keys so the rApp can address the RRMPolicyRatio object over
+        # SDNR/RESTCONF (…/ManagedElement=<meId>/GNBDUFunction=<gnbduId>/NRCellDU=<nrCellDuId>/…)
+        # without hardcoding or a discovery GET. Omitted when absent (e.g. nrCellDuId on CU jobs).
+        for env_key, job_key in (("meId", "me_id"), ("gnbduId", "gnbdu_id"), ("nrCellDuId", "nrcelldu_id")):
+            val = job.get(job_key)
+            if val is not None:
+                measured[env_key] = val
         if sst is not None:
             measured["sst"] = sst
         if sd is not None:

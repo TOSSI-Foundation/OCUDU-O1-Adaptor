@@ -333,6 +333,21 @@ class ConfigManager:
         jobs: dict = {}
         managed_element = raw_config.get("data", {}).get("ManagedElement", {}) or {}
         nf_instance_id = managed_element.get("@id") or managed_element.get("id") or "unknown"
+
+        # 3GPP Distinguished Name of the DU cell, used to address the RRMPolicyRatio over
+        # SDNR/RESTCONF (…/ManagedElement=<meId>/GNBDUFunction=<gnbduId>/NRCellDU=<nrCellDuId>).
+        # Per-slice throughput is a DU/cell metric and the RRMPolicyRatio lives under NRCellDU,
+        # so every PM envelope carries the DU DN regardless of which NF hosts the PerfMetricJob
+        # (e.g. the job may sit under GNBCUCPFunction). Sourced from the GNBDUFunction.
+        du_gnbdu = managed_element.get("GNBDUFunction") or {}
+        if isinstance(du_gnbdu, list):
+            du_gnbdu = du_gnbdu[0] if du_gnbdu else {}
+        du_gnbdu_id = du_gnbdu.get("@id") or du_gnbdu.get("id")
+        du_nrcelldu_id = None
+        du_nrcelldu = ConfigManager._ensure_list(du_gnbdu.get("NRCellDU"))
+        if du_nrcelldu:
+            du_nrcelldu_id = du_nrcelldu[0].get("@id") or du_nrcelldu[0].get("id")
+
         for nf_key in ("GNBDUFunction", "GNBCUCPFunction", "GNBCUUPFunction"):
             nf = managed_element.get(nf_key)
             if not nf:
@@ -356,6 +371,9 @@ class ConfigManager:
                     "nf_key": nf_key,
                     "nf_instance_id": nf_instance_id,
                     "plmn_id": plmn_id,
+                    "me_id": nf_instance_id,
+                    "gnbdu_id": du_gnbdu_id,
+                    "nrcelldu_id": du_nrcelldu_id,
                 }
         return jobs
 
