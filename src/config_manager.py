@@ -157,11 +157,12 @@ class ConfigManager:
             self._ws.send_ssb_command(du_cell_config)
 
         if "RRMPolicyRatio" in str(diff):
-            logging.info("Updating RRM policy")
-            rrm_policy_config = self._extract_rrm_policy_ratio_config(raw_config)
-
-            # Send update command
-            self._ws.send_rrm_policy_ratio_command(rrm_policy_config)
+            rrm_policies = self._extract_rrm_policy_ratio_config(raw_config)
+            logging.info(f"Updating RRM policy ({len(rrm_policies)} slice(s))")
+            # The gNB parses one policy per rrm_policy_ratio_set command and merges it into the
+            # matching slice by S-NSSAI, so send one command per slice policy.
+            for policy in rrm_policies:
+                self._ws.send_rrm_policy_ratio_command(policy)
 
     def get_du_cell_config(self, raw_config):
         """
@@ -636,38 +637,59 @@ class ConfigManager:
         # (e.g. "ff:ff:ff"). Strip the separators before parsing as a hex integer.
         return int(sd.replace(":", ""), 16)
 
+    @staticmethod
+    def _as_list(x):
+        # NETCONF/xmltodict collapses a single list entry to a dict; normalize to a list.
+        if x is None:
+            return []
+        return x if isinstance(x, list) else [x]
+
+    def _policy_members(self, attrs):
+        # Build the gNB member list from one RRMPolicyRatio's rRMPolicyMemberList,
+        # which may be a single dict (one member) or a list of dicts.
+        members = []
+        for m in self._as_list(attrs.get("rRMPolicyMemberList")):
+            members.append(
+                {
+                    "plmn": m["mcc"] + m["mnc"],
+                    "sst": int(m["sst"]),
+                    "sd": self._parse_sd(m["sd"]),
+                }
+            )
+        return members
+
     def _extract_rrm_policy_ratio_config(self, raw_config):
-        cfg = {}
+        # Returns a LIST of per-slice policy dicts (one per RRMPolicyRatio). The gNB merges
+        # each policy into its matching slice by S-NSSAI, so the caller sends one
+        # rrm_policy_ratio_set command per policy (multi-slice support).
+        policies = []
         try:
-            rrm_policy_config = raw_config["data"]["ManagedElement"]["GNBDUFunction"]["NRCellDU"]["RRMPolicyRatio"]["attributes"]
-
-            # Build config subtree
-            cfg = {
-                "resourceType": rrm_policy_config["resourceType"],
-                "rRMPolicyMemberList": [
+            nrcelldu = raw_config["data"]["ManagedElement"]["GNBDUFunction"]["NRCellDU"]
+            for policy in self._as_list(nrcelldu["RRMPolicyRatio"]):
+                attrs = policy["attributes"]
+                policies.append(
                     {
-                        "plmn": rrm_policy_config["rRMPolicyMemberList"]["mcc"]
-                        + rrm_policy_config["rRMPolicyMemberList"]["mnc"],
-                        "sst": int(rrm_policy_config["rRMPolicyMemberList"]["sst"]),
-                        "sd": self._parse_sd(rrm_policy_config["rRMPolicyMemberList"]["sd"]),
-                    },
-                ],
-                "min_prb_policy_ratio": int(rrm_policy_config["rRMPolicyMinRatio"]),
-                "max_prb_policy_ratio": int(rrm_policy_config["rRMPolicyMaxRatio"]),
-                "dedicated_ratio": int(rrm_policy_config["rRMPolicyDedicatedRatio"]),
-            }
-
+                        "resourceType": attrs["resourceType"],
+                        "rRMPolicyMemberList": self._policy_members(attrs),
+                        "min_prb_policy_ratio": int(attrs["rRMPolicyMinRatio"]),
+                        "max_prb_policy_ratio": int(attrs["rRMPolicyMaxRatio"]),
+                        "dedicated_ratio": int(attrs["rRMPolicyDedicatedRatio"]),
+                    }
+                )
         except (KeyError, ValueError) as e:
             logging.warning(f"Couldn't extract OCUDU RRM policy config: {e}")
 
-        return cfg
+        return policies
 
     def _extract_cell_config(self, raw_config, du_cells=None):
         cell_cfg = {}
         try:
-            rrm_policy_config = raw_config["data"]["ManagedElement"]["GNBDUFunction"]["NRCellDU"]["RRMPolicyRatio"]["attributes"]
+            nrcelldu = raw_config["data"]["ManagedElement"]["GNBDUFunction"]["NRCellDU"]
+            policies = self._as_list(nrcelldu["RRMPolicyRatio"])
 
-            plmn = rrm_policy_config["rRMPolicyMemberList"]["mcc"] + rrm_policy_config["rRMPolicyMemberList"]["mnc"]
+            # PLMN/TAC come from the first member of the first policy.
+            first_member = self._as_list(policies[0]["attributes"]["rRMPolicyMemberList"])[0]
+            plmn = first_member["mcc"] + first_member["mnc"]
 
             tac = 7  # Not present in default YANG model it seems
             if du_cells is not None:
@@ -676,23 +698,29 @@ class ConfigManager:
                         tac = cell["tac"]
                         break
 
-            # Build cell config subtree
+            # One slicing entry per (policy, member) pair, each carrying its own ratios.
+            slicing = []
+            for policy in policies:
+                attrs = policy["attributes"]
+                for m in self._as_list(attrs["rRMPolicyMemberList"]):
+                    slicing.append(
+                        {
+                            "sst": m["sst"],
+                            "sd": self._parse_sd(m["sd"]),
+                            "sched_cfg": {
+                                "min_prb_policy_ratio": attrs["rRMPolicyMinRatio"],
+                                "max_prb_policy_ratio": attrs["rRMPolicyMaxRatio"],
+                            },
+                        }
+                    )
+
             cell_cfg = {
                 "tac": tac,
                 "plmn": plmn,
-                "slicing": [
-                    {
-                        "sst": rrm_policy_config["rRMPolicyMemberList"]["sst"],
-                        "sd": self._parse_sd(rrm_policy_config["rRMPolicyMemberList"]["sd"]),
-                        "sched_cfg": {
-                            "min_prb_policy_ratio": rrm_policy_config["rRMPolicyMinRatio"],
-                            "max_prb_policy_ratio": rrm_policy_config["rRMPolicyMaxRatio"],
-                        },
-                    },
-                ],
+                "slicing": slicing,
             }
 
-        except (KeyError, ValueError) as e:
+        except (KeyError, ValueError, IndexError) as e:
             logging.warning(f"Couldn't extract OCUDU RRM policy config: {e}")
 
         return cell_cfg
