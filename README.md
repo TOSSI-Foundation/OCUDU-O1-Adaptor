@@ -86,6 +86,34 @@ $ ./ru_controller.py --host=10.10.0.100 -u admin -p admin -d running --set_full_
 
 Note: Full configuration has only been verified for a subset of configuration, e.g. with TDD 100MHz, PRACH format B4.
 
+## Network Slice Assurance
+
+This fork extends the base O1 adapter to drive a **RAN slice-assurance closed loop** between the
+OCUDU gNB and an SMO (ONAP SDNR). The main additions:
+
+* **SDNR RRM closed loop** — the `ransliceassurance` rApp reads and writes `RRMPolicyRatio`
+  (TS 28.541) on the gNB through SDNR/RESTCONF; the adapter translates the resulting NETCONF
+  config change into the gNB's `rrm_policy_ratio_set` WebSocket command. See
+  [docs/PHASE3_SDNR_RRM_CLOSED_LOOP.md](docs/PHASE3_SDNR_RRM_CLOSED_LOOP.md).
+
+* **Multi-slice RRM** — `config_manager` now renders `RRMPolicyRatio` **per slice**: it extracts a
+  list of per-slice policies and sends one `rrm_policy_ratio_set` command per slice, since the gNB
+  parses one policy per command and merges it into the matching slice by S-NSSAI. This lets the
+  rApp arbitrate PRBs across multiple contending slices (e.g. boost a premium slice's
+  `rRMPolicyMinRatio` under contention).
+
+* **Per-slice PM** — performance metrics are aggregated per `(SST, SD)` so the SMO/rApp can act on
+  per-slice throughput, and the PM envelope carries the 3GPP cell DN for SDNR correlation.
+
+* **Documentation** — see [docs/](docs/):
+  * [STACK_RUNBOOK.md](docs/STACK_RUNBOOK.md) — bring up core + gNB + UEs + netconf + adapter + rApp.
+  * [SDNR_YANG_COMPAT_FIX.md](docs/SDNR_YANG_COMPAT_FIX.md) /
+    [ODL_SDNR_NETCONF_YANG_COMPAT.md](docs/ODL_SDNR_NETCONF_YANG_COMPAT.md) — making the device's
+    YANG bundle mount cleanly in OpenDaylight/SDNR (specific + general).
+  * [O1_ADAPTERS_CALLFLOW.md](O1_ADAPTERS_CALLFLOW.md) — component call flows (with diagrams under
+    [docs/callflow/](docs/callflow/)).
+  * [SESSION_HANDOVER.md](docs/SESSION_HANDOVER.md) — running context for the integration work.
+
 ## License
 
 This project is licensed under the BSD 3-Clause Open MPI variant License – see the [LICENSE](./LICENSE) file for details.
