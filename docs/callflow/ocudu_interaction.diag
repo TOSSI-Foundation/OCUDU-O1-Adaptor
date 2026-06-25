@@ -1,0 +1,46 @@
+seqdiag {
+  default_fontsize = 12;
+  edge_length = 260;
+  span_height = 22;
+  activation = none;
+
+  SMO   [label = "SMO / rApp"];
+  DU    [label = "DU NETCONF\nserver :830"];
+  ADP   [label = "ocudu_o1_adapter\n(ConfigManager)"];
+  YAML  [label = "config.yaml\n(shared volume)"];
+  GNB   [label = "OCUDU gNB\nWS :8001"];
+  RU    [label = "O-RU\n(M-plane)"];
+
+  === Startup: build initial config ===
+  ADP  -> DU   [label = "manager.connect() + create_subscription(NETCONF)"];
+  ADP  -> DU   [label = "get-config(running)"];
+  DU  --> ADP  [label = "config XML"];
+  ADP  -> YAML [label = "Jinja2 render <profile>.yaml"];
+  YAML -> GNB  [label = "gNB reads config (volume)", color = blue];
+
+  === CM: configuration change ===
+  SMO  -> DU   [label = "edit-config RRMPolicyRatio / SSB (NETCONF)"];
+  DU  --> ADP  [label = "netconf-config-change notification"];
+  ADP  -> DU   [label = "get-config(running)"];
+  DU  --> ADP  [label = "new config XML"];
+  ADP  -> ADP  [label = "DeepDiff(last, new) -> classify"];
+  ADP  -> GNB  [label = "WS rrm_policy_ratio_set / ssb_set", color = blue];
+  ADP  -> YAML [label = "re-render YAML"];
+
+  === CM: full restart path ===
+  ADP  -> GNB  [label = "WS quit", color = red];
+  ADP  -> ADP  [label = "restart_req=true (health -> 400)"];
+  GNB --> ADP  [label = "WS reconnect"];
+  ADP  -> YAML [label = "re-render YAML"];
+
+  === PM: metrics streaming ===
+  GNB --> ADP  [label = "metrics payload (WS)"];
+  ADP  -> ADP  [label = "flatten + map TS 28.554 KPIs (per PerfMetricJob)"];
+  ADP  -> SMO  [label = "HTTP POST PM envelope -> streamTarget", color = blue];
+
+  === RU forwarding (optional) ===
+  ADP  -> RU   [label = "edit-config (forward DU config, M-plane)"];
+
+  === FM: alarms ===
+  ADP  -> SMO  [label = "VES alarm / pnfRegistration (HTTPS)", color = red];
+}

@@ -1,0 +1,46 @@
+digraph oai {
+  rankdir=LR;
+  labelloc="t";
+  fontname="Helvetica-Bold"; fontsize=20;
+  label="OAI O1 Adapter (C)  —  HOSTS the NETCONF server, RAN state flows UP into datastore";
+  node [fontname="Helvetica", fontsize=11, style="filled", color="#333333"];
+  edge [fontname="Helvetica", fontsize=9, color="#555555"];
+
+  SMO [label="SMO / rApp", shape=box3d, fillcolor="#ffe0b2"];
+  OAI [label="OAI nr-softmodem\nTelnet :9091", shape=box, fillcolor="#c8e6c9"];
+
+  subgraph cluster_stack {
+    label="o1_adp_30jan (C stack)"; style="filled,rounded"; fillcolor="#f3e5f5"; fontname="Helvetica-Bold";
+    NP  [label="netopeer2\nNETCONF server :830", fillcolor="#ffffff"];
+    SR  [label="sysrepo datastore\n(full 3GPP YANG)", shape=cylinder, fillcolor="#d1c4e9"];
+    FTP [label="vsftpd /ftp", shape=cylinder, fillcolor="#d1c4e9"];
+
+    subgraph cluster_bin {
+      label="gnb-adapter binary"; style="filled,rounded"; fillcolor="#ede7f6";
+      MAIN[label="main loop\n(sleep 1s)", fillcolor="#ffffff"];
+      NCD [label="netconf_data\n(sr_set_item / edit cb)", fillcolor="#ffffff"];
+      RRM [label="rrm_policy\n(seed + telnet push)", fillcolor="#ffffff"];
+      PMD [label="pm_data\n(15-min XML)", fillcolor="#ffffff"];
+      ALM [label="alarms", fillcolor="#ffffff"];
+      VES [label="ves (libcurl)", fillcolor="#ffffff"];
+    }
+  }
+
+  SMO  -> NP  [label="get/edit config (NETCONF)"];
+  NP   -> SR;
+  SR   -> NCD [dir=both];
+  OAI  -> MAIN[label="o1 stats (telnet poll)"];
+  MAIN -> NCD [label="parse JSON, diff"];
+  NCD  -> SR  [label="sr_set_item_str (UP)"];
+  SMO  -> NCD [label="edit RRMPolicyRatio", color="#c62828", fontcolor="#c62828"];
+  NCD  -> RRM [label="edit callback", color="#c62828", fontcolor="#c62828"];
+  RRM  -> OAI [label="telnet_update_rrm_policy (DOWN)", color="#c62828", fontcolor="#c62828"];
+  RRM  -> SR  [label="seed 8 policies @startup", style=dashed];
+  MAIN -> PMD;
+  PMD  -> FTP [label="write measData XML"];
+  FTP  -> SMO [label="FTP pull", style=dashed];
+  PMD  -> VES;
+  MAIN -> ALM;
+  ALM  -> VES;
+  VES  -> SMO [label="VES pnfReg / heartbeat / fileReady / alarm"];
+}

@@ -1,0 +1,46 @@
+digraph ocudu {
+  rankdir=LR;
+  labelloc="t";
+  fontname="Helvetica-Bold"; fontsize=20;
+  label="OCUDU O1 Adapter (Python / asyncio)  —  NETCONF CLIENT, config flows DOWN into gNB";
+  node [fontname="Helvetica", fontsize=11, style="filled", color="#333333"];
+  edge [fontname="Helvetica", fontsize=9, color="#555555"];
+
+  SMO   [label="SMO / SDN-R", shape=box3d, fillcolor="#ffe0b2"];
+  DU    [label="OCUDU DU\nNETCONF server :830", shape=box, fillcolor="#c8e6c9"];
+  GNB   [label="OCUDU gNB\nWebSocket :8001", shape=box, fillcolor="#c8e6c9"];
+  RU    [label="O-RU\nM-plane NETCONF", shape=box, fillcolor="#c8e6c9"];
+  PTPLOG[label="ptp4l / phc2sys log", shape=note, fillcolor="#eeeeee"];
+
+  subgraph cluster_adp {
+    label="ocudu_o1_adapter"; style="filled,rounded"; fillcolor="#e3f2fd"; fontname="Helvetica-Bold";
+    FLASK [label="Flask health API\n/config-healthy /status /restarted", fillcolor="#ffffff"];
+    NCM   [label="netconf_main\n+ ConfigManager\n(DeepDiff + Jinja2)", fillcolor="#ffffff"];
+    WS    [label="ws_handler", fillcolor="#ffffff"];
+    PMP   [label="PmMetrics.run_pusher", fillcolor="#ffffff"];
+    RUF   [label="RuForwarder", fillcolor="#ffffff"];
+    PTP   [label="ptp_log_monitor\n+ health checker", fillcolor="#ffffff"];
+    ALM   [label="AlarmManager", fillcolor="#ffffff"];
+    VES   [label="VesMessages", fillcolor="#ffffff"];
+    YAML  [label="rendered config.yaml", shape=note, fillcolor="#fff9c4"];
+  }
+
+  SMO  -> DU  [label="edit config (NETCONF)"];
+  DU   -> NCM [label="get-config /\nnotifications"];
+  NCM  -> YAML[label="render"];
+  YAML -> GNB [label="shared volume", style=dashed];
+  NCM  -> GNB [label="WS: ssb_set / rrm / quit"];
+  GNB  -> WS  [label="metrics (WS)"];
+  WS   -> PMP;
+  PMP  -> SMO [label="HTTP POST PM envelope"];
+  NCM  -> RUF [label="forward config"];
+  RUF  -> RU  [label="edit-config"];
+  PTPLOG -> PTP;
+  PTP  -> ALM;
+  NCM  -> ALM [style=dotted];
+  WS   -> ALM [style=dotted];
+  RUF  -> ALM [style=dotted];
+  ALM  -> VES;
+  VES  -> SMO [label="VES alarm / registration"];
+  GNB  -> FLASK [label="k8s restart via health 400", style=dashed];
+}

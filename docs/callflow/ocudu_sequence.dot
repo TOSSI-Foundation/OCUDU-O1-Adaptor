@@ -1,0 +1,30 @@
+digraph ocudu_seq {
+  rankdir=TB;
+  labelloc="t"; fontname="Helvetica-Bold"; fontsize=18;
+  label="OCUDU Adapter — startup + runtime call sequence";
+  node [shape=box, fontname="Helvetica", fontsize=11, style="filled", fillcolor="#ffffff"];
+  edge [fontname="Helvetica", fontsize=10];
+
+  n01 [label="1. main(): argparse, start Flask thread", fillcolor="#e3f2fd"];
+  n02 [label="2. asyncio.run(orchestrator) -> gather tasks:\nnetconf_main, ws_handler, run_pusher,\nRuForwarder, ptp_log_monitor", fillcolor="#e3f2fd"];
+  n03 [label="3. netconf_main: ncclient manager.connect(DU :830)"];
+  n04 [label="4. ConfigManager.run: create_subscription(NETCONF)"];
+  n05 [label="5. write_full_config: get-config(running) ->\nxmltodict -> Jinja2 render <profile>.yaml"];
+  n06 [label="6. loop: wait for netconf-config-change notification"];
+  n07 [label="7. process_config_update: get-config + DeepDiff(last,new)", fillcolor="#fff9c4"];
+  n08 [label="8a. RUNTIME-UPDATABLE\n(ssb_block_power / RRMPolicyRatio / PerfMetricJob)\n-> WS ssb_set / rrm_policy_ratio_set\n-> re-render YAML", fillcolor="#c8e6c9"];
+  n09 [label="8b. FULL RESTART NEEDED\n-> WS quit, restart_req=true (health 400)\n-> wait WS reconnect -> re-render YAML", fillcolor="#ffcdd2"];
+  n10 [label="PM path: gNB connects WS, metrics_subscribe"];
+  n11 [label="handle_ws_message: flatten + map TS 28.554 KPIs"];
+  n12 [label="build envelope -> pm_metrics_queue"];
+  n13 [label="run_pusher: HTTP POST envelope -> streamTarget (SMO)", fillcolor="#ffe0b2"];
+
+  n01 -> n02 -> n03 -> n04 -> n05 -> n06 -> n07;
+  n07 -> n08 [label="only runtime params"];
+  n07 -> n09 [label="anything else"];
+  n08 -> n06 [style=dashed, label="back to wait"];
+  n09 -> n06 [style=dashed, label="back to wait"];
+
+  n02 -> n10 [style=dotted, label="ws_handler"];
+  n10 -> n11 -> n12 -> n13;
+}

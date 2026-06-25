@@ -1,0 +1,42 @@
+seqdiag {
+  default_fontsize = 12;
+  edge_length = 260;
+  span_height = 22;
+  activation = none;
+
+  OAI   [label = "OAI nr-softmodem\nTelnet :9091"];
+  ADP   [label = "gnb-adapter\n(main loop)"];
+  SR    [label = "sysrepo +\nnetopeer2 :830"];
+  FTP   [label = "/ftp\n(vsftpd)"];
+  SMO   [label = "SMO / rApp"];
+
+  === Startup ===
+  ADP -> ADP [label = "config_init, telnet_init, netconf_data_init"];
+  ADP -> SR  [label = "rrm_policy_init_sysrepo (seed 8 RRMPolicyRatio)"];
+  ADP -> SR  [label = "rrm_policy_subscribe_changes"];
+
+  === Telnet poll -> datastore (every 1s) ===
+  ADP -> OAI [label = "telnet 'o1 stats'"];
+  OAI --> ADP [label = "JSON stats"];
+  ADP -> ADP [label = "oai_data_parse_json (cJSON) + diff vs cached"];
+  ADP -> SR  [label = "sr_set_item_str: update_full / bwp / nrcelldu", color = blue];
+
+  === SMO reads operational state ===
+  SMO -> SR  [label = "get-config / get-data (NETCONF)"];
+  SR --> SMO [label = "ManagedElement / GNBDUFunction / NRCellDU"];
+
+  === PM: 15-min XML files ===
+  ADP -> ADP [label = "pm_data_loop: accumulate, every 900s aggregate"];
+  ADP -> FTP [label = "write 3GPP measData XML"];
+  ADP -> SMO [label = "VES fileReady (HTTPS)", color = red];
+  SMO -> FTP [label = "SFTP/FTP pull XML", color = blue];
+
+  === Closed-loop RRM control ===
+  SMO -> SR  [label = "edit-config RRMPolicyRatio (NETCONF)", color = red];
+  SR --> ADP [label = "netconf_data_edit_callback"];
+  ADP -> SR  [label = "fetch min/ded/max ratios"];
+  ADP -> OAI [label = "telnet_update_rrm_policy(sst,sd,min,ded,max)", color = red];
+
+  === FM + heartbeat ===
+  ADP -> SMO [label = "VES pnfRegistration / heartbeat / alarm (HTTPS)"];
+}

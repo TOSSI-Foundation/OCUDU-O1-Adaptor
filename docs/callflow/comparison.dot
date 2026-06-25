@@ -1,0 +1,35 @@
+digraph compare {
+  rankdir=TB;
+  labelloc="t"; fontname="Helvetica-Bold"; fontsize=20;
+  label="The Key Inversion — NETCONF role & config direction";
+  node [shape=box, fontname="Helvetica", fontsize=12, style="filled", fillcolor="#ffffff", color="#333333"];
+  edge [fontname="Helvetica", fontsize=11];
+
+  subgraph cluster_ocudu {
+    label="OCUDU adapter (Python) — adapter is NETCONF CLIENT";
+    style="filled,rounded"; fillcolor="#e3f2fd"; fontname="Helvetica-Bold";
+    o_smo [label="SMO", fillcolor="#ffe0b2"];
+    o_du  [label="DU NETCONF server", fillcolor="#c8e6c9"];
+    o_adp [label="adapter\n(reads via ncclient)", fillcolor="#bbdefb"];
+    o_gnb [label="gNB", fillcolor="#c8e6c9"];
+    o_smo -> o_du  [label="NETCONF"];
+    o_du  -> o_adp [label="adapter READS"];
+    o_adp -> o_gnb [label="render YAML / WS cmd  (DOWN)", color="#1565c0", fontcolor="#1565c0", penwidth=2];
+    o_gnb -> o_adp [label="metrics WS (UP)"];
+    o_adp -> o_smo [label="HTTP PM"];
+  }
+
+  subgraph cluster_oai {
+    label="OAI adapter (C) — adapter HOSTS the NETCONF server";
+    style="filled,rounded"; fillcolor="#f3e5f5"; fontname="Helvetica-Bold";
+    a_gnb [label="OAI softmodem", fillcolor="#c8e6c9"];
+    a_adp [label="adapter", fillcolor="#ce93d8"];
+    a_srv [label="sysrepo + netopeer2\n(adapter hosts server)", fillcolor="#d1c4e9"];
+    a_smo [label="SMO", fillcolor="#ffe0b2"];
+    a_gnb -> a_adp [label="telnet stats (UP)", color="#6a1b9a", fontcolor="#6a1b9a", penwidth=2];
+    a_adp -> a_srv [label="sr_set_item (UP)"];
+    a_srv -> a_smo [label="NETCONF"];
+    a_smo -> a_srv [label="edit RRM (DOWN)", color="#c62828", fontcolor="#c62828"];
+    a_srv -> a_gnb [label="telnet push (DOWN)", color="#c62828", fontcolor="#c62828"];
+  }
+}

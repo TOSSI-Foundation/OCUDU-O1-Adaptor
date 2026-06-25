@@ -1,0 +1,35 @@
+digraph oai_seq {
+  rankdir=TB;
+  labelloc="t"; fontname="Helvetica-Bold"; fontsize=18;
+  label="OAI Adapter — startup + runtime call sequence";
+  node [shape=box, fontname="Helvetica", fontsize=11, style="filled", fillcolor="#ffffff"];
+  edge [fontname="Helvetica", fontsize=10];
+
+  n01 [label="1. main(): config_init(config.json)", fillcolor="#f3e5f5"];
+  n02 [label="2. telnet_local_init + register alarm callbacks", fillcolor="#f3e5f5"];
+  n03 [label="3. netconf_init / netconf_data_init", fillcolor="#f3e5f5"];
+  n04 [label="4. rrm_policy_init_sysrepo (seed 8 RRMPolicyRatio)", fillcolor="#f3e5f5"];
+  n05 [label="5. rrm_policy_subscribe_changes", fillcolor="#f3e5f5"];
+  n06 [label="6. pm_data_init / ves_init / alarms_init / oai_init", fillcolor="#f3e5f5"];
+
+  n07 [label="7. MAIN LOOP every 1s: telnet 'o1 stats'", fillcolor="#fff9c4"];
+  n08 [label="8. oai_data_parse_json (cJSON)"];
+  n09 [label="9. oai_data_feed: diff vs cached state", fillcolor="#fff9c4"];
+  n10 [label="10a. gnbId/name changed -> netconf_data_update_full", fillcolor="#c8e6c9"];
+  n11 [label="10b. BWP / nrcelldu changed ->\nupdate_bwp_dl / update_bwp_ul / update_nrcelldu", fillcolor="#c8e6c9"];
+  n12 [label="11. alarms_loop / pm_data_loop / ves_loop"];
+  n13 [label="12. 15-min window -> write measData XML to /ftp\n-> VES fileReady; heartbeat interval -> VES heartbeat", fillcolor="#ffe0b2"];
+
+  c01 [label="CLOSED-LOOP RRM:\nSMO edits RRMPolicyRatio (NETCONF)", fillcolor="#ffcdd2"];
+  c02 [label="netconf_data_edit_callback fires", fillcolor="#ffcdd2"];
+  c03 [label="fetch min/ded/max ratios from sysrepo", fillcolor="#ffcdd2"];
+  c04 [label="telnet_update_rrm_policy(sst,sd,min,ded,max) -> OAI", fillcolor="#ffcdd2"];
+
+  n01 -> n02 -> n03 -> n04 -> n05 -> n06 -> n07 -> n08 -> n09;
+  n09 -> n10 [label="device changed"];
+  n09 -> n11 [label="cell/bwp changed"];
+  n10 -> n12; n11 -> n12; n12 -> n13;
+  n13 -> n07 [style=dashed, label="next tick"];
+
+  c01 -> c02 -> c03 -> c04;
+}
