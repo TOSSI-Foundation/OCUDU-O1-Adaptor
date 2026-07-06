@@ -93,6 +93,33 @@ def _derived_kpis(data: dict) -> list:
     return out
 
 
+def _collect_meas_reports(data: dict, out: list) -> None:
+    cucp = data.get("cu-cp")
+    if not isinstance(cucp, dict):
+        return
+    reports = cucp.get("meas_reports")
+    if not isinstance(reports, list):
+        return
+    quantities = ("ssb_rsrp_dbm", "ssb_rsrq_db", "ssb_sinr_db", "csi_rsrp_dbm", "csi_rsrq_db", "csi_sinr_db")
+    for rep in reports:
+        if not isinstance(rep, dict):
+            continue
+        ue = rep.get("ue")
+        for role in ("serving", "best_neigh", "neigh"):
+            cells = rep.get(role)
+            if not isinstance(cells, list):
+                continue
+            for cell in cells:
+                if not isinstance(cell, dict):
+                    continue
+                pci = cell.get("pci")
+                prefix = f"cu-cp.meas.ue{ue}.{role}.pci{pci}"
+                for q in quantities:
+                    v = cell.get(q)
+                    if isinstance(v, (int, float)) and not isinstance(v, bool):
+                        out.append({"name": f"{prefix}.{q}", "value": v})
+
+
 def _flatten_metrics(data: dict) -> list:
     """Flatten the gNB WS metric payload into a list of {name, value} entries."""
     out = []
@@ -131,6 +158,7 @@ def _flatten_metrics(data: dict) -> list:
             if isinstance(entry, dict):
                 _collect_scalars("du.du_high.mac.dl", entry, out)
 
+    _collect_meas_reports(data, out)
     out.extend(_derived_kpis(data))
     return out
 
@@ -171,11 +199,13 @@ class PmMetrics:
         # Per-slice throughput, keyed by the UE S-NSSAI tagged by the RAN. Dynamic: any number
         # of slices that appear in ue_list are aggregated independently.
         slice_tput = self._slice_throughput(data)
-        if not slice_tput:
+        general_metrics = _flatten_metrics(data)
+        if not slice_tput and not general_metrics:
             return
 
         for job_id, job in active_jobs.items():
             allowed = set(job.get("performanceMetrics") or [])
+
             for (sst, sd), agg in slice_tput.items():
                 slice_metrics = [
                     {"name": "DlUeThroughput_Cell", "value": agg["dl_kbps"]},
@@ -184,9 +214,15 @@ class PmMetrics:
                 job_metrics = (
                     [m for m in slice_metrics if m["name"] in allowed] if allowed else slice_metrics
                 )
-                if not job_metrics:
-                    continue
-                envelope = self._build_envelope(job_id, job, job_metrics, sst=sst, sd=sd)
+                if job_metrics:
+                    envelope = self._build_envelope(job_id, job, job_metrics, sst=sst, sd=sd)
+                    self._state.pm_metrics_queue.put_nowait((job["streamTarget"], envelope))
+
+            job_general = (
+                [m for m in general_metrics if m.get("name") in allowed] if allowed else general_metrics
+            )
+            if job_general:
+                envelope = self._build_envelope(job_id, job, job_general)
                 self._state.pm_metrics_queue.put_nowait((job["streamTarget"], envelope))
 
     @staticmethod
