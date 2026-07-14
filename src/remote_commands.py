@@ -49,6 +49,17 @@ class WsRemoteCommands:
             }
         )
 
+    def send_handover_command(self, handover_config) -> Any:
+        """
+        Sends a handover command (serving_pci, rnti, target_pci, target_plmn, target_tac) for a single UE.
+        """
+        return self._send_ws_message(
+            {
+                "cmd": "ho",
+                **handover_config,
+            }
+        )
+
     def send_quit_command(self) -> Any:
         """
         Sends a quit command to the server and waits for connection close.

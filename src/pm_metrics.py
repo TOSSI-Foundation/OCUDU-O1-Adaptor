@@ -200,7 +200,8 @@ class PmMetrics:
         # of slices that appear in ue_list are aggregated independently.
         slice_tput = self._slice_throughput(data)
         general_metrics = _flatten_metrics(data)
-        if not slice_tput and not general_metrics:
+        congestion_cells = self._extract_congestion_cells(data)
+        if not slice_tput and not general_metrics and not congestion_cells:
             return
 
         for job_id, job in active_jobs.items():
@@ -221,8 +222,8 @@ class PmMetrics:
             job_general = (
                 [m for m in general_metrics if m.get("name") in allowed] if allowed else general_metrics
             )
-            if job_general:
-                envelope = self._build_envelope(job_id, job, job_general)
+            if job_general or congestion_cells:
+                envelope = self._build_envelope(job_id, job, job_general, cells=congestion_cells)
                 self._state.pm_metrics_queue.put_nowait((job["streamTarget"], envelope))
 
     @staticmethod
@@ -249,7 +250,50 @@ class PmMetrics:
                 agg["nof_ues"] += 1
         return slices
 
-    def _build_envelope(self, job_id: str, job: dict, metrics: list, sst=None, sd=None) -> dict:
+    @staticmethod
+    def _extract_congestion_cells(data: dict) -> list:
+        """Structured per-cell + per-UE view for the congestion rApp.
+
+        The generic flat-metrics path collapses every UE's fields under one name, losing the
+        rnti->PRB association the rApp needs to rank UEs. This preserves it as a clean array.
+        RNTI stays DECIMAL, as the gNB emits it. Returns [] for non-cells frames.
+        """
+        out = []
+        for cell in data.get("cells") or []:
+            if not isinstance(cell, dict):
+                continue
+            cm = cell.get("cell_metrics")
+            if not isinstance(cm, dict) or cm.get("pci") is None:
+                continue
+            ues = []
+            for ue in cell.get("ue_list") or []:
+                if not isinstance(ue, dict) or ue.get("rnti") is None:
+                    continue
+                ues.append(
+                    {
+                        "rnti": ue.get("rnti"),
+                        "prb_dl": ue.get("tot_pdsch_prbs_used"),
+                        "prb_ul": ue.get("tot_pusch_prbs_used"),
+                        "thp_dl": ue.get("dl_brate"),
+                        "thp_ul": ue.get("ul_brate"),
+                        "dl_ok": ue.get("dl_nof_ok"),
+                        "dl_nok": ue.get("dl_nof_nok"),
+                        "ul_ok": ue.get("ul_nof_ok"),
+                        "ul_nok": ue.get("ul_nof_nok"),
+                    }
+                )
+            out.append(
+                {
+                    "pci": cm.get("pci"),
+                    "nof_prbs": cm.get("nof_prbs"),
+                    "nof_dl_slots": cm.get("nof_dl_slots"),
+                    "nof_ul_slots": cm.get("nof_ul_slots"),
+                    "ues": ues,
+                }
+            )
+        return out
+
+    def _build_envelope(self, job_id: str, job: dict, metrics: list, sst=None, sd=None, cells=None) -> dict:
         """Construct a JSON envelope for the PM stream per the agreed schema.
 
         When sst/sd are provided, the envelope is slice-scoped (measuredObject carries the
@@ -271,7 +315,7 @@ class PmMetrics:
             measured["sst"] = sst
         if sd is not None:
             measured["sd"] = sd
-        return {
+        envelope = {
             "nfType": self._profile,
             "nfInstanceId": job.get("nf_instance_id", "unknown"),
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -280,6 +324,11 @@ class PmMetrics:
             "metrics": metrics,
             "jobId": job_id,
         }
+        if cells:
+            # Structured per-cell + per-UE view for the congestion rApp (additive; other
+            # consumers ignore it). Carries the rnti->PRB link the flat metrics destroy.
+            envelope["cells"] = cells
+        return envelope
 
     async def run_pusher(self) -> None:
         """Consume pm_metrics_queue and POST each envelope to its configured streamTarget."""

@@ -32,7 +32,8 @@ class ConfigManager:
         template_filename (str): The filename of the template used for rendering the configuration file.
     """
 
-    _RUNTIME_UPDATABLE_PARAMS = ["ssb_block_power_dbm", "RRMPolicyRatio", "PerfMetricJob"]
+    _RUNTIME_UPDATABLE_PARAMS = ["ssb_block_power_dbm", "RRMPolicyRatio", "PerfMetricJob", "ocudu_handover_trigger"]
+    _HANDOVER_TRIGGER_LEAVES = ("serving_pci", "rnti", "target_pci", "target_plmn", "target_tac")
     _FULL_RESTART_TIMEOUT = 30
 
     def __init__(self, state: AppState, netconf_manager, datastore, output_filename, template_filename, ru_forward_enabled, profile="gnb"):
@@ -163,6 +164,50 @@ class ConfigManager:
             # matching slice by S-NSSAI, so send one command per slice policy.
             for policy in rrm_policies:
                 self._ws.send_rrm_policy_ratio_command(policy)
+
+        if "ocudu_handover_trigger" in str(diff):
+            handover = self._extract_handover_trigger(raw_config)
+            if handover:
+                logging.info(
+                    f"Triggering handover of rnti={handover['rnti']} from pci={handover['serving_pci']} "
+                    f"to pci={handover['target_pci']}"
+                )
+                self._ws.send_handover_command(handover)
+
+    def _extract_handover_trigger(self, raw_config):
+        """
+        Extracts the one-shot handover command from the CU-CP mobility extensions.
+
+        Args:
+            raw_config (dict): The raw NETCONF configuration data.
+
+        Returns:
+            dict: The handover command parameters, or None if they could not be extracted.
+        """
+        try:
+            trigger = raw_config["data"]["ManagedElement"]["GNBCUCPFunction"][
+                "ocudu_gnbcucpfunction_mobility_extensions"
+            ]["ocudu_handover_trigger"]
+        except (KeyError, TypeError) as e:
+            logging.warning(f"Couldn't extract ocudu_handover_trigger: {e}")
+            return None
+
+        missing = [leaf for leaf in self._HANDOVER_TRIGGER_LEAVES if leaf not in trigger]
+        if missing:
+            logging.warning(f"Ignoring handover trigger, missing leaves: {', '.join(missing)}")
+            return None
+
+        try:
+            return {
+                "serving_pci": int(trigger["serving_pci"]),
+                "rnti": int(trigger["rnti"]),
+                "target_pci": int(trigger["target_pci"]),
+                "target_plmn": str(trigger["target_plmn"]),
+                "target_tac": int(trigger["target_tac"]),
+            }
+        except (ValueError, TypeError) as e:
+            logging.warning(f"Ignoring handover trigger, invalid leaf value: {e}")
+            return None
 
     def get_du_cell_config(self, raw_config):
         """
