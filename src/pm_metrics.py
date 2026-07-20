@@ -169,6 +169,7 @@ class PmMetrics:
     def __init__(self, state: AppState, profile: str = "gnb"):
         self._state = state
         self._profile = profile
+        self._neighbours = None
 
     async def handle_ws_message(self, msg: str) -> None:
         """Dispatch WS messages by component type, and stream PM envelopes when configured."""
@@ -181,6 +182,9 @@ class PmMetrics:
         if data.get("cmd"):
             logging.debug("WS command response: %s", data)
             return
+
+        if data.get("neighbours"):
+            self._neighbours = data["neighbours"]
 
         for key in ("cu-cp", "du", "cells"):
             block = data.get(key)
@@ -252,11 +256,8 @@ class PmMetrics:
 
     @staticmethod
     def _extract_congestion_cells(data: dict) -> list:
-        """Structured per-cell + per-UE view for the congestion rApp.
-
-        The generic flat-metrics path collapses every UE's fields under one name, losing the
-        rnti->PRB association the rApp needs to rank UEs. This preserves it as a clean array.
-        RNTI stays DECIMAL, as the gNB emits it. Returns [] for non-cells frames.
+        """Structured per-cell + per-UE view for the congestion rApp; RNTI stays decimal.
+        Returns [] for non-cells frames.
         """
         out = []
         for cell in data.get("cells") or []:
@@ -325,9 +326,9 @@ class PmMetrics:
             "jobId": job_id,
         }
         if cells:
-            # Structured per-cell + per-UE view for the congestion rApp (additive; other
-            # consumers ignore it). Carries the rnti->PRB link the flat metrics destroy.
             envelope["cells"] = cells
+            if self._neighbours:
+                envelope["neighbours"] = self._neighbours
         return envelope
 
     async def run_pusher(self) -> None:
