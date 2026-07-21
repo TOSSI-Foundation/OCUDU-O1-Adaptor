@@ -11,6 +11,7 @@ filtering per PM job, and pushing envelopes to configured stream targets.
 import asyncio
 import json
 import logging
+import time
 from datetime import datetime, timezone
 
 import aiohttp
@@ -170,6 +171,7 @@ class PmMetrics:
         self._state = state
         self._profile = profile
         self._neighbours = None
+        self._last_sent: dict = {}
 
     async def handle_ws_message(self, msg: str) -> None:
         """Dispatch WS messages by component type, and stream PM envelopes when configured."""
@@ -208,7 +210,9 @@ class PmMetrics:
         if not slice_tput and not general_metrics and not congestion_cells:
             return
 
+        now = time.monotonic()
         for job_id, job in active_jobs.items():
+            period = job.get("granularityPeriod") or 1
             allowed = set(job.get("performanceMetrics") or [])
 
             for (sst, sd), agg in slice_tput.items():
@@ -219,7 +223,7 @@ class PmMetrics:
                 job_metrics = (
                     [m for m in slice_metrics if m["name"] in allowed] if allowed else slice_metrics
                 )
-                if job_metrics:
+                if job_metrics and self._due((job_id, "slice", sst, sd), period, now):
                     envelope = self._build_envelope(job_id, job, job_metrics, sst=sst, sd=sd)
                     self._state.pm_metrics_queue.put_nowait((job["streamTarget"], envelope))
 
@@ -227,8 +231,16 @@ class PmMetrics:
                 [m for m in general_metrics if m.get("name") in allowed] if allowed else general_metrics
             )
             if job_general or congestion_cells:
-                envelope = self._build_envelope(job_id, job, job_general, cells=congestion_cells)
-                self._state.pm_metrics_queue.put_nowait((job["streamTarget"], envelope))
+                kind = "cells" if congestion_cells else "general"
+                if self._due((job_id, kind), period, now):
+                    envelope = self._build_envelope(job_id, job, job_general, cells=congestion_cells)
+                    self._state.pm_metrics_queue.put_nowait((job["streamTarget"], envelope))
+
+    def _due(self, key, period, now) -> bool:
+        if now - self._last_sent.get(key, 0.0) < period:
+            return False
+        self._last_sent[key] = now
+        return True
 
     @staticmethod
     def _slice_throughput(data: dict) -> dict:
