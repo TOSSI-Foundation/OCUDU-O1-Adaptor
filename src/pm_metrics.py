@@ -121,6 +121,53 @@ def _collect_meas_reports(data: dict, out: list) -> None:
                         out.append({"name": f"{prefix}.{q}", "value": v})
 
 
+_UE_MEAS_TTL_S = 30.0
+
+
+def _parse_ue_meas(rep: dict):
+    """Extract (rnti, serv_rsrp, neigh_meas) from a CU-CP meas report; serving_pci names
+    the measured object, so the serving cell is taken from the serving results list."""
+    rnti = rep.get("rnti")
+    if rnti is None:
+        return None
+    reported_pci = rep.get("serving_pci")
+    serv_rsrp = None
+    serv_pci = None
+    for cell in rep.get("serving") or []:
+        if not isinstance(cell, dict):
+            continue
+        v = cell.get("ssb_rsrp_dbm")
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            continue
+        if cell.get("pci") == reported_pci:
+            serv_rsrp = v
+            serv_pci = cell.get("pci")
+            break
+        if serv_rsrp is None:
+            serv_rsrp = v
+            serv_pci = cell.get("pci")
+    neigh, seen = [], set()
+    for role in ("best_neigh", "neigh"):
+        for cell in rep.get(role) or []:
+            if not isinstance(cell, dict):
+                continue
+            pci = cell.get("pci")
+            rsrp = cell.get("ssb_rsrp_dbm")
+            if pci is None or pci == serv_pci or pci in seen:
+                continue
+            if isinstance(rsrp, bool) or not isinstance(rsrp, (int, float)):
+                continue
+            seen.add(pci)
+            entry = {"pci": pci, "rsrp": rsrp}
+            sinr = cell.get("ssb_sinr_db")
+            if isinstance(sinr, (int, float)) and not isinstance(sinr, bool):
+                entry["sinr"] = sinr
+            neigh.append(entry)
+    if serv_rsrp is None and not neigh:
+        return None
+    return rnti, serv_rsrp, neigh
+
+
 def _flatten_metrics(data: dict) -> list:
     """Flatten the gNB WS metric payload into a list of {name, value} entries."""
     out = []
@@ -172,6 +219,7 @@ class PmMetrics:
         self._profile = profile
         self._neighbours = None
         self._last_sent: dict = {}
+        self._ue_meas: dict = {}
 
     async def handle_ws_message(self, msg: str) -> None:
         """Dispatch WS messages by component type, and stream PM envelopes when configured."""
@@ -187,6 +235,10 @@ class PmMetrics:
 
         if data.get("neighbours"):
             self._neighbours = data["neighbours"]
+
+        cucp = data.get("cu-cp")
+        if isinstance(cucp, dict) and isinstance(cucp.get("meas_reports"), list):
+            self._update_ue_meas(cucp["meas_reports"])
 
         for key in ("cu-cp", "du", "cells"):
             block = data.get(key)
@@ -242,6 +294,30 @@ class PmMetrics:
         self._last_sent[key] = now
         return True
 
+    def _update_ue_meas(self, reports: list) -> None:
+        """Cache per-UE measurements by RNTI; serving and neighbour parts merge
+        independently so a serving-only report cannot wipe cached neighbours."""
+        now = time.monotonic()
+        for rep in reports:
+            if not isinstance(rep, dict):
+                continue
+            parsed = _parse_ue_meas(rep)
+            if parsed is None:
+                continue
+            rnti, serv_rsrp, neigh = parsed
+            entry = self._ue_meas.setdefault(rnti, {})
+            if serv_rsrp is not None:
+                entry["serv"] = serv_rsrp
+                entry["ts_serv"] = now
+            if neigh:
+                entry["neigh"] = neigh
+                entry["ts_neigh"] = now
+        cutoff = now - _UE_MEAS_TTL_S
+        self._ue_meas = {
+            r: e for r, e in self._ue_meas.items()
+            if max(e.get("ts_serv", 0.0), e.get("ts_neigh", 0.0)) >= cutoff
+        }
+
     @staticmethod
     def _slice_throughput(data: dict) -> dict:
         """Aggregate per-UE throughput by slice S-NSSAI (sst, sd) from the gNB cell metrics.
@@ -266,12 +342,12 @@ class PmMetrics:
                 agg["nof_ues"] += 1
         return slices
 
-    @staticmethod
-    def _extract_congestion_cells(data: dict) -> list:
+    def _extract_congestion_cells(self, data: dict) -> list:
         """Structured per-cell + per-UE view for the congestion rApp; RNTI stays decimal.
-        Returns [] for non-cells frames.
+        Fresh cached radio measurements ride along per UE. Returns [] for non-cells frames.
         """
         out = []
+        fresh_after = time.monotonic() - _UE_MEAS_TTL_S
         for cell in data.get("cells") or []:
             if not isinstance(cell, dict):
                 continue
@@ -282,19 +358,24 @@ class PmMetrics:
             for ue in cell.get("ue_list") or []:
                 if not isinstance(ue, dict) or ue.get("rnti") is None:
                     continue
-                ues.append(
-                    {
-                        "rnti": ue.get("rnti"),
-                        "prb_dl": ue.get("tot_pdsch_prbs_used"),
-                        "prb_ul": ue.get("tot_pusch_prbs_used"),
-                        "thp_dl": ue.get("dl_brate"),
-                        "thp_ul": ue.get("ul_brate"),
-                        "dl_ok": ue.get("dl_nof_ok"),
-                        "dl_nok": ue.get("dl_nof_nok"),
-                        "ul_ok": ue.get("ul_nof_ok"),
-                        "ul_nok": ue.get("ul_nof_nok"),
-                    }
-                )
+                entry = {
+                    "rnti": ue.get("rnti"),
+                    "prb_dl": ue.get("tot_pdsch_prbs_used"),
+                    "prb_ul": ue.get("tot_pusch_prbs_used"),
+                    "thp_dl": ue.get("dl_brate"),
+                    "thp_ul": ue.get("ul_brate"),
+                    "dl_ok": ue.get("dl_nof_ok"),
+                    "dl_nok": ue.get("dl_nof_nok"),
+                    "ul_ok": ue.get("ul_nof_ok"),
+                    "ul_nok": ue.get("ul_nof_nok"),
+                }
+                meas = self._ue_meas.get(ue.get("rnti"))
+                if meas:
+                    if meas.get("ts_serv", 0.0) >= fresh_after and meas.get("serv") is not None:
+                        entry["serv_rsrp"] = meas["serv"]
+                    if meas.get("ts_neigh", 0.0) >= fresh_after and meas.get("neigh"):
+                        entry["neigh_meas"] = meas["neigh"]
+                ues.append(entry)
             out.append(
                 {
                     "pci": cm.get("pci"),
