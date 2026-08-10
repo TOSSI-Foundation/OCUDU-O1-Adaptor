@@ -125,11 +125,16 @@ _UE_MEAS_TTL_S = 30.0
 
 
 def _parse_ue_meas(rep: dict):
-    """Extract (rnti, serv_rsrp, neigh_meas) from a CU-CP meas report; serving_pci names
-    the measured object, so the serving cell is taken from the serving results list."""
+    """Extract (rnti, serv_rsrp, neigh_meas, amf_ue_ngap_id) from a CU-CP meas report;
+    serving_pci names the measured object, so the serving cell is taken from the serving
+    results list. The AMF-UE-NGAP-ID is the identifier the near-RT RIC needs to name this
+    UE in an E2SM-RC control, and it is carried independently of the radio measurements."""
     rnti = rep.get("rnti")
     if rnti is None:
         return None
+    amf_ue_ngap_id = rep.get("amf_ue_ngap_id")
+    if isinstance(amf_ue_ngap_id, bool) or not isinstance(amf_ue_ngap_id, int):
+        amf_ue_ngap_id = None
     reported_pci = rep.get("serving_pci")
     serv_rsrp = None
     serv_pci = None
@@ -163,9 +168,9 @@ def _parse_ue_meas(rep: dict):
             if isinstance(sinr, (int, float)) and not isinstance(sinr, bool):
                 entry["sinr"] = sinr
             neigh.append(entry)
-    if serv_rsrp is None and not neigh:
+    if serv_rsrp is None and not neigh and amf_ue_ngap_id is None:
         return None
-    return rnti, serv_rsrp, neigh
+    return rnti, serv_rsrp, neigh, amf_ue_ngap_id
 
 
 def _flatten_metrics(data: dict) -> list:
@@ -304,7 +309,7 @@ class PmMetrics:
             parsed = _parse_ue_meas(rep)
             if parsed is None:
                 continue
-            rnti, serv_rsrp, neigh = parsed
+            rnti, serv_rsrp, neigh, amf_ue_ngap_id = parsed
             entry = self._ue_meas.setdefault(rnti, {})
             if serv_rsrp is not None:
                 entry["serv"] = serv_rsrp
@@ -312,10 +317,13 @@ class PmMetrics:
             if neigh:
                 entry["neigh"] = neigh
                 entry["ts_neigh"] = now
+            if amf_ue_ngap_id is not None:
+                entry["amf"] = amf_ue_ngap_id
+                entry["ts_amf"] = now
         cutoff = now - _UE_MEAS_TTL_S
         self._ue_meas = {
             r: e for r, e in self._ue_meas.items()
-            if max(e.get("ts_serv", 0.0), e.get("ts_neigh", 0.0)) >= cutoff
+            if max(e.get("ts_serv", 0.0), e.get("ts_neigh", 0.0), e.get("ts_amf", 0.0)) >= cutoff
         }
 
     @staticmethod
@@ -375,6 +383,8 @@ class PmMetrics:
                         entry["serv_rsrp"] = meas["serv"]
                     if meas.get("ts_neigh", 0.0) >= fresh_after and meas.get("neigh"):
                         entry["neigh_meas"] = meas["neigh"]
+                    if meas.get("ts_amf", 0.0) >= fresh_after and meas.get("amf") is not None:
+                        entry["amf_ue_ngap_id"] = meas["amf"]
                 ues.append(entry)
             out.append(
                 {
