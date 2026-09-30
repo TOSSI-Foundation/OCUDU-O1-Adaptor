@@ -225,6 +225,7 @@ class PmMetrics:
         self._neighbours = None
         self._last_sent: dict = {}
         self._ue_meas: dict = {}
+        self._fronthaul: dict = {}  # pci -> the gNB's ru_ofh MACs, from its RU metrics
 
     async def handle_ws_message(self, msg: str) -> None:
         """Dispatch WS messages by component type, and stream PM envelopes when configured."""
@@ -240,6 +241,10 @@ class PmMetrics:
 
         if data.get("neighbours"):
             self._neighbours = data["neighbours"]
+
+        for cell in ((data.get("ru") or {}).get("ofh") or {}).get("cells") or []:
+            if isinstance(cell, dict) and cell.get("pci") is not None and cell.get("du_mac_addr"):
+                self._fronthaul[cell["pci"]] = {k: cell.get(k) for k in ("du_mac_addr", "ru_mac_addr")}
 
         cucp = data.get("cu-cp")
         if isinstance(cucp, dict) and isinstance(cucp.get("meas_reports"), list):
@@ -393,6 +398,7 @@ class PmMetrics:
                     "nof_dl_slots": cm.get("nof_dl_slots"),
                     "nof_ul_slots": cm.get("nof_ul_slots"),
                     "ues": ues,
+                    **self._fronthaul.get(cm.get("pci"), {}),
                 }
             )
         return out
